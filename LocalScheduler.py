@@ -1,6 +1,6 @@
 import json
 import random
-from typing import List
+from typing import List, Dict
 
 from kubernetes import client, watch
 
@@ -9,11 +9,26 @@ class LocalScheduler:
     def __init__(self, scheduler_name: str, zone: str, global_scheduler_name=""):
         self.scheduler_name = scheduler_name
         self.v1 = client.CoreV1Api()
+        self.v2 = client.AppsV1Api()
         self.zone = zone
         self.global_scheduler_name = global_scheduler_name
 
     def __str__(self):
         return f"Scheduler: {self.scheduler_name}"
+
+    def get_deployment_name(self, owner_references):
+        if isinstance(owner_references, list):
+            owner_name = owner_references[0].name
+            owner_kind = owner_references[0].kind
+            if owner_kind == 'ReplicaSet':
+                replica_set = self.v2.read_namespaced_replica_set(name=owner_name, namespace="default")
+                owner_references2 = replica_set.metadata.owner_references
+                if isinstance(owner_references2, list) and owner_references2[0].kind == 'Deployment':
+                    return owner_references2[0].name
+                else:
+                    return None
+            else:
+                return None
 
     def nodes_available(self) -> List[str]:
         ready_nodes = []
@@ -39,20 +54,21 @@ class LocalScheduler:
         self.v1.create_namespaced_pod_binding(pod_name, namespace, body, _preload_content=False)
         print("scheduled")
 
-    def reschedule_pod(self, pod_name: str, scheduler_name: str):
+    def reschedule_pod_deployment(self, deployment_name: str, scheduler_name: str):
         # because schedulerName from pods cannot be changed, so we delete the pod to reschedule
-        pod = self.v1.delete_namespaced_pod(name=pod_name, namespace='default')
-        last_applied_configuration_json = pod.metadata.annotations['kubectl.kubernetes.io/last-applied-configuration']
-        pod_data = json.loads(last_applied_configuration_json)
+        deployment = self.v2.read_namespaced_deployment(name=deployment_name, namespace='default')
+        self.v2.delete_namespaced_deployment(name=deployment_name, namespace='default')
+        last_applied_configuration_json = deployment.metadata.annotations['kubectl.kubernetes.io/last-applied-configuration']
+        deployment_data = json.loads(last_applied_configuration_json)
         # this annotations is normally set only kubectl apply command but we need it for bottom up
-        pod_data['metadata']['annotations'][
+        deployment_data['metadata']['annotations'][
             'kubectl.kubernetes.io/last-applied-configuration'] = last_applied_configuration_json
-        pod_spec = pod_data['spec']
-        pod_spec['schedulerName'] = scheduler_name
-        pod_copy = client.V1Pod(api_version=pod_data['apiVersion'], kind=pod_data['kind'],
-                                metadata=pod_data['metadata'], spec=pod_spec)
+        deployment_spec = deployment_data['spec']
+        deployment_spec['template']['spec']['schedulerName'] = scheduler_name
+        deployment_copy = client.V1Deployment(api_version=deployment_data['apiVersion'], kind=deployment_data['kind'],
+                                              metadata=deployment_data['metadata'], spec=deployment_spec)
 
-        self.v1.create_namespaced_pod(namespace='default', body=pod_copy)
+        self.v2.create_namespaced_deployment(namespace='default', body=deployment_copy)
         print("rescheduled")
 
     def start_schedule(self):
@@ -65,6 +81,8 @@ class LocalScheduler:
                 pod = event['object']
                 if pod.status.phase == "Pending" and pod.spec.scheduler_name == self.scheduler_name and \
                         pod.spec.node_name is None and pod.metadata.deletion_timestamp is None:
+                    owner_references = pod.metadata.owner_references
+                    deployment_name = self.get_deployment_name(owner_references)
                     if pod.metadata.name == 'poison-pod':
                         w.stop()
                         running = False
@@ -74,7 +92,7 @@ class LocalScheduler:
                     try:
                         nodes_available = self.nodes_available()
                         if not nodes_available and self.global_scheduler_name:
-                            self.reschedule_pod(pod.metadata.name, self.global_scheduler_name)
+                            self.reschedule_pod_deployment(deployment_name, self.global_scheduler_name)
                         elif nodes_available:
                             self.schedule_pod(pod_name=pod.metadata.name,
                                               node_name=random.choice(nodes_available))
