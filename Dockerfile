@@ -3,4 +3,3 @@ FROM python:3.8
 RUN pip install kubernetes python-dotenv
 COPY . ./
 CMD ["python", "-u", "./main.py"]
-# Or enter the name of your unique directory and parameter set.

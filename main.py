@@ -10,7 +10,7 @@ def start_controller():
     # config.load_kube_config()
     # use for the docker image
     config.load_incluster_config()
-    supported_zone = "zoneA"
+    supported_zone = "zone-a"
     group = "example.com"
     plural = "localschedulers"
     v2 = client.CustomObjectsApi()
@@ -21,7 +21,8 @@ def start_controller():
         # wirft ein 404 error wenn die resource noch net online ist.
         # Possible solution: davor checken ob sie existiert und wenn nicht mit api erstellen
 
-        stream = watch.Watch().stream(v2.list_cluster_custom_object, label_selector='zone={}'.format(supported_zone),
+        stream = watch.Watch().stream(v2.list_cluster_custom_object,
+                                      label_selector='ether.edgerun.io/zone={}'.format(supported_zone),
                                       group=group, version="v1", plural=plural)
         for event in stream:
             # print("Event triggered: %s" % event)
@@ -32,7 +33,7 @@ def start_controller():
             metadata: Dict = obj.get("metadata")
             scheduler_name: str = metadata['name']
             global_scheduler_name = spec['globalScheduler']
-            zone: str = metadata['labels']['zone']
+            zone: str = metadata['labels']['ether.edgerun.io/zone']
 
             if operation == "ADDED":
                 print_resource_info(scheduler_name, zone, spec)
