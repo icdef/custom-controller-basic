@@ -7,9 +7,9 @@ from LocalScheduler import LocalScheduler
 
 def start_controller():
     # use for local testing
-    config.load_kube_config()
+    # config.load_kube_config()
     # use for the docker image
-    # config.load_incluster_config()
+    config.load_incluster_config()
     supported_zone = "zoneA"
     group = "example.com"
     plural = "localschedulers"
