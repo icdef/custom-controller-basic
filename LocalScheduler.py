@@ -17,7 +17,7 @@ class LocalScheduler:
 
     def nodes_available(self) -> List[str]:
         ready_nodes = []
-        for n in self.v1.list_node(label_selector='zone={}'.format(self.zone)).items:
+        for n in self.v1.list_node(label_selector='ether.edgerun.io/zone={}'.format(self.zone)).items:
             for status in n.status.conditions:
                 if status.status == "True" and status.type == "Ready":
                     ready_nodes.append(n.metadata.name)
