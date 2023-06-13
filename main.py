@@ -19,20 +19,6 @@ def start_controller():
     v2 = client.CustomObjectsApi()
     storage_schedulers: Dict[str, LocalScheduler] = {}
 
-    rds = RedisClient.from_env()
-    metrics = setup_metrics()
-    daemon = setup_daemon(rds, metrics)
-
-    faas_system = GalileoFaasSystem(daemon.context, metrics)
-    # start the subscribers to listen for telemetry, traces and Pods
-    daemon.start()
-    print(faas_system.context.node_service.get_nodes_by_name())
-
-    # shut down
-    daemon.stop(timeout=5)
-    rds.close()
-    print('we made it?')
-
     while True:
         print("Start watching for custom local scheduler for {}".format(supported_zone))
         # wirft ein 404 error wenn die resource noch net online ist.
