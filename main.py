@@ -1,7 +1,10 @@
 import threading
+
+from examples.basic.main import setup_metrics, setup_daemon
+from galileofaas.connections import RedisClient
+from galileofaas.system.faas import GalileoFaasSystem
 from kubernetes import client, config, watch
 from typing import Dict
-
 from LocalScheduler import LocalScheduler
 
 
@@ -15,6 +18,20 @@ def start_controller():
     plural = "localschedulers"
     v2 = client.CustomObjectsApi()
     storage_schedulers: Dict[str, LocalScheduler] = {}
+
+    rds = RedisClient.from_env()
+    metrics = setup_metrics()
+    daemon = setup_daemon(rds, metrics)
+
+    faas_system = GalileoFaasSystem(daemon.context, metrics)
+    # start the subscribers to listen for telemetry, traces and Pods
+    daemon.start()
+    print(faas_system.context.node_service.get_nodes_by_name())
+
+    # shut down
+    daemon.stop(timeout=5)
+    rds.close()
+    print('we made it?')
 
     while True:
         print("Start watching for custom local scheduler for {}".format(supported_zone))
