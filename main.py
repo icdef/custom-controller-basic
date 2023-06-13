@@ -1,11 +1,38 @@
+import logging
+import os
 import threading
+import time
 
 from examples.basic.main import setup_metrics, setup_daemon
+from faas.system import LoggingLogger, Clock
+from examples.basic.podfactory import BasicExamplePodFactory
+from faasopts.autoscalers.api import BaseAutoscaler
+from faasopts.autoscalers.k8s.hpa.central.latency import HorizontalLatencyPodAutoscaler, \
+    HorizontalLatencyPodAutoscalerParameters
+from faasopts.loadbalancers.wrr.wrr import SmoothLrtWeightCalculator
 from galileofaas.connections import RedisClient
+from galileofaas.context.daemon import GalileoFaasContextDaemon
+from galileofaas.context.model import GalileoFaasContext
+from galileofaas.context.platform.deployment.factory import create_deployment_service
+from galileofaas.context.platform.network.factory import create_network_service
+from galileofaas.context.platform.node.factory import create_node_service
+from galileofaas.context.platform.replica.factory import KubernetesFunctionReplicaFactory, create_replica_service
+from galileofaas.context.platform.telemetry.factory import create_telemetry_service
+from galileofaas.context.platform.trace.factory import create_trace_service
+from galileofaas.context.platform.zone.factory import create_zone_service
+from galileofaas.system.core import GalileoFaasMetrics
 from galileofaas.system.faas import GalileoFaasSystem
+from galileofaas.system.metrics import GalileoLogger
 from kubernetes import client, config, watch
-from typing import Dict
+from typing import Dict, Tuple, List
+
+from telemc import TelemetryController
+
 from LocalScheduler import LocalScheduler
+from loadbalancer import K8sLoadBalancer
+from reconcile import K8sReconciliationOptimizationDaemon
+
+logger = logging.getLogger(__name__)
 
 
 def start_controller():
@@ -20,16 +47,41 @@ def start_controller():
     storage_schedulers: Dict[str, LocalScheduler] = {}
 
     rds = RedisClient.from_env()
-    metrics = setup_metrics()
-    daemon = setup_daemon(rds, metrics)
+    daemon, faas_system, metrics = setup_galileo_faas(rds)
+    ctx = daemon.context
 
-    faas_system = GalileoFaasSystem(daemon.context, metrics)
+    daemon.context.telemc.unpause_all()
     # start the subscribers to listen for telemetry, traces and Pods
     daemon.start()
-    print(faas_system.context.node_service.get_nodes_by_name())
+    time.sleep(3)
 
-    # shut down
+    scaler, load_balancers = setup_orchestration(faas_system, ctx, metrics)
+    load_balancer_daemons = []
+    for load_balancer in load_balancers:
+        def run():
+            time.sleep(1)
+            print('tt')
+            load_balancer.update()
+
+        t = threading.Thread(target=run)
+        t.start()
+        load_balancer_daemons.append(t)
+
+    scaler_daemon = K8sReconciliationOptimizationDaemon(5, scaler)
+    scaler_daemon.start()
+
+    print(ctx.telemetry_service.node_resources)
+    nodes = daemon.context.node_service.get_nodes()
+    print(f'Available nodes: {[n.name for n in nodes]}')
+    cpu = daemon.context.telemetry_service.get_node_cpu(nodes[0].name)
+    print(f'Mean CPU usage of node {nodes[0].name}: {cpu["value"].mean()}')
+    daemon.context.telemc.pause_all()
+
     daemon.stop(timeout=5)
+    scaler_daemon.stop()
+    for load_balancer in load_balancer_daemons:
+        load_balancer.join(timeout=5)
+
     rds.close()
     print('we made it?')
 
@@ -38,7 +90,8 @@ def start_controller():
         # wirft ein 404 error wenn die resource noch net online ist.
         # Possible solution: davor checken ob sie existiert und wenn nicht mit api erstellen
 
-        stream = watch.Watch().stream(v2.list_cluster_custom_object, label_selector='ether.edgerun.io/zone={}'.format(supported_zone),
+        stream = watch.Watch().stream(v2.list_cluster_custom_object,
+                                      label_selector='ether.edgerun.io/zone={}'.format(supported_zone),
                                       group=group, version="v1", plural=plural)
         for event in stream:
             # print("Event triggered: %s" % event)
@@ -95,6 +148,29 @@ def create_poison_pod_for_scheduler(scheduler_name: str):
     pod_body = client.V1Pod(metadata=pod_metadata, spec=pod_spec, kind='Pod', api_version='v1')
 
     v1.create_namespaced_pod(namespace='default', body=pod_body)
+
+
+def setup_galileo_faas(rds: RedisClient) -> Tuple[GalileoFaasContextDaemon, GalileoFaasSystem, GalileoFaasMetrics]:
+    metrics = setup_metrics()
+    daemon = setup_daemon(rds, metrics)
+
+    faas_system = GalileoFaasSystem(daemon.context, metrics)
+    return daemon, faas_system, metrics
+
+
+def setup_orchestration(faas_system: GalileoFaasSystem, ctx: GalileoFaasContext, metrics: GalileoFaasMetrics) -> Tuple[
+    BaseAutoscaler, List[K8sLoadBalancer]]:
+    scaler_parameters = {
+        # function name: HorizontalLatencyPodAutoscalerParameters
+        'mobilenet': HorizontalLatencyPodAutoscalerParameters(lookback=10, target_time_measure='rtt',
+                                                              target_duration=39)
+    }
+    scaler = HorizontalLatencyPodAutoscaler(scaler_parameters, ctx, faas_system, metrics, lambda: time.time())
+
+    smooth_weight_calculator = SmoothLrtWeightCalculator(ctx, lambda: time.time(), 1)
+    load_balancer_a = K8sLoadBalancer(ctx, 'zone-a', metrics, smooth_weight_calculator)
+    load_balancer_b = K8sLoadBalancer(ctx, 'zone-b', metrics, smooth_weight_calculator)
+    return scaler, [load_balancer_a, load_balancer_b]
 
 
 if __name__ == '__main__':
