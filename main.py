@@ -1,32 +1,23 @@
 import logging
-import os
 import threading
 import time
+from typing import Dict, Tuple, List
 
 from examples.basic.main import setup_metrics, setup_daemon
-from faas.system import LoggingLogger, Clock
-from examples.basic.podfactory import BasicExamplePodFactory
+from faas.system import FunctionImage, Function, FunctionContainer, FunctionDeployment, ScalingConfiguration, \
+    DeploymentRanking
+from faas.util.constant import function_label
 from faasopts.autoscalers.api import BaseAutoscaler
 from faasopts.autoscalers.k8s.hpa.central.latency import HorizontalLatencyPodAutoscaler, \
     HorizontalLatencyPodAutoscalerParameters
-from faasopts.loadbalancers.wrr.wrr import SmoothLrtWeightCalculator
+from faasopts.loadbalancers.wrr.wrr import SmoothLrtWeightCalculator, RoundRobinWeightCalculator
 from galileofaas.connections import RedisClient
 from galileofaas.context.daemon import GalileoFaasContextDaemon
 from galileofaas.context.model import GalileoFaasContext
-from galileofaas.context.platform.deployment.factory import create_deployment_service
-from galileofaas.context.platform.network.factory import create_network_service
-from galileofaas.context.platform.node.factory import create_node_service
-from galileofaas.context.platform.replica.factory import KubernetesFunctionReplicaFactory, create_replica_service
-from galileofaas.context.platform.telemetry.factory import create_telemetry_service
-from galileofaas.context.platform.trace.factory import create_trace_service
-from galileofaas.context.platform.zone.factory import create_zone_service
-from galileofaas.system.core import GalileoFaasMetrics
+from galileofaas.system.core import GalileoFaasMetrics, KubernetesResourceConfiguration, KubernetesFunctionDeployment
 from galileofaas.system.faas import GalileoFaasSystem
-from galileofaas.system.metrics import GalileoLogger
 from kubernetes import client, config, watch
-from typing import Dict, Tuple, List
-
-from telemc import TelemetryController
+from skippy.core.model import ResourceRequirements
 
 from LocalScheduler import LocalScheduler
 from loadbalancer import K8sLoadBalancer
@@ -50,6 +41,28 @@ def start_controller():
     daemon, faas_system, metrics = setup_galileo_faas(rds)
     ctx = daemon.context
 
+
+
+
+
+
+    function_image = FunctionImage(image='edgerun/mobilenet-inference:1.0.0')
+    mobilenet_function = Function(name='mobilenet', fn_images=[function_image], labels={'ether.edgerun.io/type': 'fn',
+                                                                                        function_label: 'mobilenet'})
+    # was muss ich da setzen???
+    resource_requirements = ResourceRequirements.from_str("1Gi", "1")
+    resource_config = KubernetesResourceConfiguration(requests=resource_requirements)
+    print(resource_config.get_resource_requirements())
+    function_container = FunctionContainer(fn_image=function_image, resource_config=resource_config)
+    function_deployment = FunctionDeployment(fn=mobilenet_function, fn_containers=[function_container]
+                                             , scaling_configuration=ScalingConfiguration()
+                                             , deployment_ranking=DeploymentRanking(containers=[function_container]))
+    function_kubernetes_deployment = KubernetesFunctionDeployment(deployment=function_deployment, original_name='mobilenet'
+                                                                  , namespace='default')
+
+    faas_system.deploy(function_kubernetes_deployment)
+    print(faas_system.get_replicas('mobilenet'))
+    # faas_system.scale_down('mobilenet', faas_system.get_replicas('mobilenet'))
     daemon.context.telemc.unpause_all()
     # start the subscribers to listen for telemetry, traces and Pods
     daemon.start()
@@ -59,9 +72,10 @@ def start_controller():
     load_balancer_daemons = []
     for load_balancer in load_balancers:
         def run():
-            time.sleep(1)
-            print('tt')
-            load_balancer.update()
+            while True:
+                time.sleep(1)
+                print('tt')
+                load_balancer.update()
 
         t = threading.Thread(target=run)
         t.start()
@@ -75,6 +89,10 @@ def start_controller():
     print(f'Available nodes: {[n.name for n in nodes]}')
     cpu = daemon.context.telemetry_service.get_node_cpu(nodes[0].name)
     print(f'Mean CPU usage of node {nodes[0].name}: {cpu["value"].mean()}')
+    ram = daemon.context.telemetry_service.get_node_ram(nodes[0].name)
+    print(f'Mean RAM usage of node {nodes[0].name}: {ram["value"].mean()}')
+
+    time.sleep(20)
     daemon.context.telemc.pause_all()
 
     daemon.stop(timeout=5)
@@ -167,10 +185,23 @@ def setup_orchestration(faas_system: GalileoFaasSystem, ctx: GalileoFaasContext,
     }
     scaler = HorizontalLatencyPodAutoscaler(scaler_parameters, ctx, faas_system, metrics, lambda: time.time())
 
-    smooth_weight_calculator = SmoothLrtWeightCalculator(ctx, lambda: time.time(), 1)
-    load_balancer_a = K8sLoadBalancer(ctx, 'zone-a', metrics, smooth_weight_calculator)
-    load_balancer_b = K8sLoadBalancer(ctx, 'zone-b', metrics, smooth_weight_calculator)
+    # smooth_weight_calculator = SmoothLrtWeightCalculator(ctx, lambda: time.time(), 1)
+    round_robin_calculator_a = RoundRobinWeightCalculator()
+    round_robin_calculator_b = RoundRobinWeightCalculator()
+    load_balancer_a = K8sLoadBalancer(ctx, 'zone-a', metrics, round_robin_calculator_a)
+    load_balancer_b = K8sLoadBalancer(ctx, 'zone-b', metrics, round_robin_calculator_b)
     return scaler, [load_balancer_a, load_balancer_b]
+
+
+def find_function_replicas(fn_name: str) -> List[str]:
+    v1 = client.CoreV1Api()
+    pods = v1.list_namespaced_pod(namespace='default', pretty=True)
+    replica_ids = []
+    for pod in pods.items:
+        if fn_name in pod.spec.containers[0].image:
+            replica_ids.append(pod.metadata.uid)
+
+    return replica_ids
 
 
 if __name__ == '__main__':

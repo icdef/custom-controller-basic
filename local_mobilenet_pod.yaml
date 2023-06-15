@@ -1,0 +1,14 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: tt
+  labels:
+    app: tt
+    ether.edgerun.io/type: fn
+spec:
+  containers:
+  - name: test-mobilenet
+    image: edgerun/mobilenet-inference:1.0.0
+  restartPolicy: Never
+  nodeSelector:
+    ether.edgerun.io/zone: zone-a
