@@ -1,0 +1,16 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: tt
+  labels:
+    app: tt
+spec:
+  containers:
+  - name: tt-container
+    image: icdef/localcontroller:1.9
+    envFrom:
+      - configMapRef:
+          name: galileo-config
+  restartPolicy: Never
+#  nodeSelector:
+#    zone: zone-a
