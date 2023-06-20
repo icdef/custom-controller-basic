@@ -11,7 +11,7 @@ from faasopts.autoscalers.api import BaseAutoscaler
 from faasopts.autoscalers.k8s.hpa.central.latency import HorizontalLatencyPodAutoscaler, \
     HorizontalLatencyPodAutoscalerParameters
 from faasopts.loadbalancers.wrr.wrr import SmoothLrtWeightCalculator, RoundRobinWeightCalculator
-from galileofaas.connections import RedisClient
+from galileofaas.connections import RedisClient, KubernetesClient
 from galileofaas.context.daemon import GalileoFaasContextDaemon
 from galileofaas.context.model import GalileoFaasContext
 from galileofaas.system.core import GalileoFaasMetrics, KubernetesResourceConfiguration, KubernetesFunctionDeployment
@@ -28,9 +28,10 @@ logger = logging.getLogger(__name__)
 
 def start_controller():
     # use for local testing
-    config.load_kube_config()
+    # config.load_kube_config()
     # use for the docker image
     # config.load_incluster_config()
+    KubernetesClient.from_env()
     supported_zone = "zone-a"
     group = "example.com"
     plural = "localschedulers"
@@ -41,27 +42,11 @@ def start_controller():
     daemon, faas_system, metrics = setup_galileo_faas(rds)
     ctx = daemon.context
 
-
-
-
-
-
-    function_image = FunctionImage(image='edgerun/mobilenet-inference:1.0.0')
-    mobilenet_function = Function(name='mobilenet', fn_images=[function_image], labels={'ether.edgerun.io/type': 'fn',
-                                                                                        function_label: 'mobilenet'})
-    # was muss ich da setzen???
-    resource_requirements = ResourceRequirements.from_str("1Gi", "1")
-    resource_config = KubernetesResourceConfiguration(requests=resource_requirements)
-    print(resource_config.get_resource_requirements())
-    function_container = FunctionContainer(fn_image=function_image, resource_config=resource_config)
-    function_deployment = FunctionDeployment(fn=mobilenet_function, fn_containers=[function_container]
-                                             , scaling_configuration=ScalingConfiguration()
-                                             , deployment_ranking=DeploymentRanking(containers=[function_container]))
-    function_kubernetes_deployment = KubernetesFunctionDeployment(deployment=function_deployment, original_name='mobilenet'
-                                                                  , namespace='default')
+    function_kubernetes_deployment = generate_mobilenet_deployment()
 
     faas_system.deploy(function_kubernetes_deployment)
     print(faas_system.get_replicas('mobilenet'))
+
     # faas_system.scale_down('mobilenet', faas_system.get_replicas('mobilenet'))
     daemon.context.telemc.unpause_all()
     # start the subscribers to listen for telemetry, traces and Pods
@@ -71,11 +56,10 @@ def start_controller():
     scaler, load_balancers = setup_orchestration(faas_system, ctx, metrics)
     load_balancer_daemons = []
     for load_balancer in load_balancers:
-        def run():
+        def run(var=load_balancer):
             while True:
                 time.sleep(1)
-                print('tt')
-                load_balancer.update()
+                var.update()
 
         t = threading.Thread(target=run)
         t.start()
@@ -91,6 +75,20 @@ def start_controller():
     print(f'Mean CPU usage of node {nodes[0].name}: {cpu["value"].mean()}')
     ram = daemon.context.telemetry_service.get_node_ram(nodes[0].name)
     print(f'Mean RAM usage of node {nodes[0].name}: {ram["value"].mean()}')
+    time.sleep(1)
+    counter = 0
+    while counter < 5:
+        faas_system.scale_up('mobilenet', 1)
+        cpu = daemon.context.telemetry_service.get_node_cpu(nodes[0].name)
+        cpu2 = daemon.context.telemetry_service.get_node_cpu(nodes[1].name)
+        print(f'Mean CPU usage of node {nodes[0].name}: {cpu["value"].mean()}')
+        print(f'Mean CPU usage of node {nodes[1].name}: {cpu2["value"].mean()}')
+        ram = daemon.context.telemetry_service.get_node_ram(nodes[0].name)
+        ram2 = daemon.context.telemetry_service.get_node_ram(nodes[1].name)
+        print(f'Mean RAM usage of node {nodes[0].name}: {ram["value"].mean()}')
+        print(f'Mean RAM usage of node {nodes[1].name}: {ram2["value"].mean()}')
+        counter += 1
+        time.sleep(2)
 
     time.sleep(20)
     daemon.context.telemc.pause_all()
@@ -133,6 +131,23 @@ def start_controller():
                 create_poison_pod_for_scheduler(scheduler_name)
                 storage_schedulers.pop(scheduler_name)
                 print("Resource %s was deleted" % scheduler_name)
+
+
+def generate_mobilenet_deployment():
+    function_image = FunctionImage(image='edgerun/mobilenet-inference:1.0.0')
+    mobilenet_function = Function(name='mobilenet', fn_images=[function_image], labels={'ether.edgerun.io/type': 'fn',
+                                                                                        function_label: 'mobilenet'})
+    resource_requirements = ResourceRequirements.from_str("1Gi", "1")
+    resource_config = KubernetesResourceConfiguration(requests=resource_requirements)
+    print(resource_config.get_resource_requirements())
+    function_container = FunctionContainer(fn_image=function_image, resource_config=resource_config)
+    function_deployment = FunctionDeployment(fn=mobilenet_function, fn_containers=[function_container]
+                                             , scaling_configuration=ScalingConfiguration()
+                                             , deployment_ranking=DeploymentRanking(containers=[function_container]))
+    function_kubernetes_deployment = KubernetesFunctionDeployment(deployment=function_deployment,
+                                                                  original_name='mobilenet'
+                                                                  , namespace='default')
+    return function_kubernetes_deployment
 
 
 def print_resource_info(resource_name: str, zone: str, spec: Dict):
