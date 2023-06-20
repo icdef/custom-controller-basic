@@ -121,6 +121,7 @@ celerybeat.pid
 
 # Environments
 .env
+galileo-faas-config.env
 .venv
 env/
 venv/
