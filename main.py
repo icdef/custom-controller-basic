@@ -166,6 +166,7 @@ def create_new_scheduler(scheduler_name: str, zone: str, global_scheduler_name: 
     local_scheduler = LocalScheduler(scheduler_name, zone, global_scheduler_name)
     # name must be unique for schedulers
     t1 = threading.Thread(target=local_scheduler.start_schedule)
+
     t1.start()
     return local_scheduler
 

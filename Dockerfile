@@ -1,6 +1,4 @@
 FROM python:3.9
-# Or any preferred Python version.
-#RUN pip install kubernetes python-dotenv
 COPY CustomControllerBasic ./
 COPY edgerun ./edgerun/
 RUN pip install -e edgerun/faas
