@@ -1,1 +1,4 @@
-# kubernetes==17.17.
+edgerun-galileo-experiments==0.0.2.dev13
+edgerun-galileo-experiments-extensions==0.0.1.dev13
+protobuf==3.20.*
+# faas, galileo faas und faas-optimizations über -e in edgerun installieren

@@ -1,10 +1,19 @@
-FROM python:3.9
-COPY CustomControllerBasic ./
-COPY edgerun ./edgerun/
-RUN pip install -e edgerun/faas
-RUN pip install -e edgerun/galileo-faas
-RUN pip install -e edgerun/faas-optimizations
-RUN pip install protobuf==3.20.*
-RUN pip install edgerun-galileo-experiments==0.0.2.dev13
-RUN pip install edgerun-galileo-experiments-extensions==0.0.1.dev13
-CMD ["python", "-u", "./main.py"]
+FROM python:3.9-slim as compiler
+ENV PYTHONUNBUFFERED 1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY CustomControllerBasic/requirements.txt .
+RUN pip install -r requirements.txt
+
+
+
+FROM python:3.9-slim as build-image
+COPY --from=compiler /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY edgerun .
+COPY CustomControllerBasic .
+RUN pip install -e faas
+RUN pip install -e galileo-faas
+RUN pip install -e faas-optimizations
+CMD ["python", "-u", "main.py"]
